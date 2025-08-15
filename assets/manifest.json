@@ -20,7 +20,9 @@
     }
   ],
   "permissions": [
-    "webRequest"
+    "webRequest",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
