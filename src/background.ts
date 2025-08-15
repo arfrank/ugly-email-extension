@@ -75,8 +75,8 @@ export async function initBackground(): Promise<void> {
     types: ['image'],
   });
 
-  chrome.runtime.onConnect.addListener((port: any) => {
-    port.onMessage.addListener((data: { id: string, body: string }) => {
+  chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
+    port.onMessage.addListener((data: { id: string; body: string }) => {
       const pixel = trackers.match(data.body);
       port.postMessage({ pixel, id: data.id });
     });
