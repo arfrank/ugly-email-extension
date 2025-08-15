@@ -1,55 +1,68 @@
 import trackers from './services/trackers';
 
-(async () => {
-  await trackers.init();
+// Convert regex pattern to URL filter format for declarativeNetRequest
+export function convertPatternToUrlFilter(pattern: string): string {
+  return pattern
+    .replace(/\\/g, '')
+    .replace(/\.\*/g, '*')
+    .replace(/\$/g, '');
+}
 
-  // Update declarativeNetRequest rules based on tracker patterns
-  async function updateBlockingRules() {
-    // Get current rules to remove them
-    const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-    const existingRuleIds = existingRules.map((rule) => rule.id);
-    // Remove existing rules
-    if (existingRuleIds.length > 0) {
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: existingRuleIds,
-      });
-    }
+// Generate blocking rules from tracker patterns
+export function generateBlockingRules(patterns: string[]): chrome.declarativeNetRequest.Rule[] {
+  const rules: chrome.declarativeNetRequest.Rule[] = [];
+  let ruleId = 1;
 
-    // Create new blocking rules for each tracker pattern
-    const rules: chrome.declarativeNetRequest.Rule[] = [];
-    let ruleId = 1;
-    trackers.identifiers.forEach((pattern) => {
-      // Convert regex pattern to URL filter format
-      // This is a simplified conversion - may need adjustment based on actual patterns
-      const urlFilter = pattern
-        .replace(/\\/g, '')
-        .replace(/\.\*/g, '*')
-        .replace(/\$/g, '');
-      rules.push({
-        // eslint-disable-next-line no-plusplus
-        id: ruleId++,
-        priority: 1,
-        action: {
-          type: chrome.declarativeNetRequest.RuleActionType.BLOCK,
-        },
-        condition: {
-          urlFilter: `*${urlFilter}*`,
-          resourceTypes: [chrome.declarativeNetRequest.ResourceType.IMAGE],
-          domains: ['mail.google.com'],
-        },
-      });
+  patterns.forEach((pattern) => {
+    const urlFilter = convertPatternToUrlFilter(pattern);
+    rules.push({
+      // eslint-disable-next-line no-plusplus
+      id: ruleId++,
+      priority: 1,
+      action: {
+        type: chrome.declarativeNetRequest.RuleActionType.BLOCK,
+      },
+      condition: {
+        urlFilter: `*${urlFilter}*`,
+        resourceTypes: [chrome.declarativeNetRequest.ResourceType.IMAGE],
+        domains: ['mail.google.com'],
+      },
     });
+  });
 
-    // Add the new rules
-    if (rules.length > 0) {
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        addRules: rules,
-      });
-    }
+  return rules;
+}
+
+// Update declarativeNetRequest rules based on tracker patterns
+export async function updateBlockingRules(patterns: string[]): Promise<void> {
+  // Get current rules to remove them
+  const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
+  const existingRuleIds = existingRules.map((rule) => rule.id);
+
+  // Remove existing rules
+  if (existingRuleIds.length > 0) {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: existingRuleIds,
+    });
   }
 
+  // Create new blocking rules
+  const rules = generateBlockingRules(patterns);
+
+  // Add the new rules
+  if (rules.length > 0) {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      addRules: rules,
+    });
+  }
+}
+
+// Initialize background script
+export async function initBackground(): Promise<void> {
+  await trackers.init();
+
   // Update blocking rules after trackers are initialized
-  await updateBlockingRules();
+  await updateBlockingRules(trackers.identifiers);
 
   // Keep webRequest for detection/logging (non-blocking)
   chrome.webRequest.onBeforeRequest.addListener((details: { url: string }) => {
@@ -68,4 +81,9 @@ import trackers from './services/trackers';
       port.postMessage({ pixel, id: data.id });
     });
   });
-})();
+}
+
+// Auto-initialize when script loads (for production)
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+  initBackground();
+}
