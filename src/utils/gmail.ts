@@ -2,6 +2,12 @@
 /* eslint-disable import/prefer-default-export */
 import GmailFactory from '../../vendor/gmail-js';
 
+declare global {
+  interface Window {
+    jQuery: any;
+  }
+}
+
 const GMAIL_LOAD_TIMEOUT = 10000; // 10 seconds
 const GMAIL_RETRY_DELAY = 1000; // 1 second
 const MAX_RETRIES = 5;

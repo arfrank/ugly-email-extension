@@ -41,7 +41,7 @@ describe('Trackers service', () => {
     const response = await Trackers.fetchTrackers();
 
     expect(fetch).toHaveBeenCalled();
-    expect(fetch).toBeCalledWith('https://trackers.uglyemail.com/list.txt?ts=12345');
+    expect(fetch).toBeCalledWith('https://trackers.uglyemail.com/list.txt?ts=12345', expect.objectContaining({ signal: expect.any(Object) }));
     expect(response).toEqual([
       { name: 'SendGrid', pattern: '/wf/open?upn=' },
       { name: 'MailChimp', pattern: '/track/open.php?u=' },
@@ -57,7 +57,7 @@ describe('Trackers service', () => {
     const response = await Trackers.fetchVersion();
 
     expect(fetch).toHaveBeenCalled();
-    expect(fetch).toBeCalledWith('https://trackers.uglyemail.com/version.txt?ts=12345');
+    expect(fetch).toBeCalledWith('https://trackers.uglyemail.com/version.txt?ts=12345', expect.objectContaining({ signal: expect.any(Object) }));
     expect(response).toEqual(5);
   });
 });
