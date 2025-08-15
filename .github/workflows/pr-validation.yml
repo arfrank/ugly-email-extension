@@ -1,0 +1,293 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+  checks: write
+
+jobs:
+  pr-title-check:
+    name: 📝 PR Title Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📝 Check PR title
+      uses: amannn/action-semantic-pull-request@v5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        types: |
+          feat
+          fix
+          docs
+          style
+          refactor
+          perf
+          test
+          build
+          ci
+          chore
+          revert
+        requireScope: false
+        subjectPattern: ^[A-Z].*$
+        subjectPatternError: |
+          The subject "{subject}" found in the pull request title "{title}"
+          didn't match the configured pattern. Please ensure that the subject
+          starts with an uppercase letter.
+
+  pr-size-check:
+    name: 📏 PR Size Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📏 Check PR size
+      uses: codelytv/pr-size-labeler@v1
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        xs_label: 'size/xs'
+        xs_max_size: '10'
+        s_label: 'size/s'
+        s_max_size: '100'
+        m_label: 'size/m'
+        m_max_size: '500'
+        l_label: 'size/l'
+        l_max_size: '1000'
+        xl_label: 'size/xl'
+        
+    - name: 📊 Generate size report
+      run: |
+        echo "## 📏 PR Size Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Get PR stats
+        ADDITIONS=$(gh pr view ${{ github.event.pull_request.number }} --json additions -q '.additions')
+        DELETIONS=$(gh pr view ${{ github.event.pull_request.number }} --json deletions -q '.deletions')
+        FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files | length')
+        
+        echo "- Files changed: $FILES" >> $GITHUB_STEP_SUMMARY
+        echo "- Lines added: $ADDITIONS" >> $GITHUB_STEP_SUMMARY
+        echo "- Lines deleted: $DELETIONS" >> $GITHUB_STEP_SUMMARY
+        echo "- Net change: $((ADDITIONS - DELETIONS))" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$ADDITIONS" -gt 1000 ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ This is a large PR. Consider breaking it into smaller pieces." >> $GITHUB_STEP_SUMMARY
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pr-labels:
+    name: 🏷️ Auto Label PR
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 🏷️ Label based on files changed
+      uses: actions/labeler@v4
+      with:
+        repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        sync-labels: true
+
+  pr-branch-check:
+    name: 🌿 Branch Name Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 🌿 Check branch name
+      run: |
+        BRANCH="${{ github.head_ref }}"
+        echo "Branch name: $BRANCH"
+        
+        # Check if branch follows naming convention
+        if echo "$BRANCH" | grep -E '^(feature|fix|hotfix|release|docs|test|refactor|chore)/[a-z0-9-]+$'; then
+          echo "✅ Branch name follows convention"
+        else
+          echo "⚠️ Branch name doesn't follow convention (type/description)"
+          echo "Examples: feature/add-login, fix/bug-123, docs/update-readme"
+        fi
+
+  pr-description-check:
+    name: 📋 PR Description Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📋 Check PR description
+      run: |
+        BODY="${{ github.event.pull_request.body }}"
+        
+        if [ -z "$BODY" ] || [ ${#BODY} -lt 50 ]; then
+          echo "⚠️ PR description is too short. Please provide more details."
+          exit 1
+        fi
+        
+        # Check for required sections
+        echo "## 📋 PR Description Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if echo "$BODY" | grep -qi "## Description\|## Summary\|## What"; then
+          echo "✅ Has description section" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Missing description section" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if echo "$BODY" | grep -qi "## Test\|## Testing\|## How to test"; then
+          echo "✅ Has testing section" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Missing testing section" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if echo "$BODY" | grep -qi "## Checklist\|- \["; then
+          echo "✅ Has checklist" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "📝 Consider adding a checklist" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  pr-conflicts-check:
+    name: 🔀 Merge Conflicts Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔀 Check for conflicts
+      run: |
+        git fetch origin ${{ github.base_ref }}
+        
+        # Try to merge base branch
+        if git merge --no-commit --no-ff origin/${{ github.base_ref }}; then
+          echo "✅ No merge conflicts"
+          git merge --abort
+        else
+          echo "❌ Merge conflicts detected"
+          git merge --abort
+          exit 1
+        fi
+
+  pr-dependencies-check:
+    name: 📦 Dependencies Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 📦 Check for dependency changes
+      run: |
+        if git diff --name-only origin/${{ github.base_ref }}..HEAD | grep -E "package.*json"; then
+          echo "## 📦 Dependency Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show dependency diff
+          echo '```diff' >> $GITHUB_STEP_SUMMARY
+          git diff origin/${{ github.base_ref }}..HEAD -- package.json | grep -E "^\+" | head -20 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Please ensure all new dependencies are necessary and secure" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  pr-test-coverage:
+    name: 📊 Test Coverage Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🧪 Run tests with coverage
+      run: npm test -- --coverage
+      continue-on-error: true
+      
+    - name: 📊 Generate coverage report
+      run: |
+        echo "## 📊 Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "coverage/coverage-summary.json" ]; then
+          TOTAL=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
+          echo "Total coverage: ${TOTAL}%" >> $GITHUB_STEP_SUMMARY
+          
+          if (( $(echo "$TOTAL < 70" | bc -l) )); then
+            echo "⚠️ Coverage is below 70%" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Good test coverage" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+  pr-security-check:
+    name: 🔒 Security Quick Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔒 Check for secrets
+      run: |
+        echo "## 🔒 Security Check" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for potential secrets
+        if git diff origin/${{ github.base_ref }}..HEAD | grep -E "(api_key|apikey|secret|password|token)" -i; then
+          echo "⚠️ Potential secrets detected. Please review carefully." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ No obvious secrets detected" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for console.log
+        if git diff origin/${{ github.base_ref }}..HEAD | grep -E "console\.(log|debug)"; then
+          echo "📝 Console statements detected. Consider removing for production." >> $GITHUB_STEP_SUMMARY
+        fi
+
+  pr-welcome:
+    name: 👋 Welcome First Time Contributors
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    
+    steps:
+    - name: 👋 Check if first contribution
+      uses: actions/first-interaction@v1
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        pr-message: |
+          👋 Welcome @${{ github.actor }}! 
+          
+          Thank you for your contribution to Ugly Email! 🎉
+          
+          As this is your first PR, here are a few things to keep in mind:
+          - Our CI checks will run automatically
+          - A maintainer will review your PR soon
+          - Feel free to ask questions if you need help
+          
+          Thanks again for contributing! 🚀

@@ -1,0 +1,305 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [ master, main, develop ]
+  push:
+    branches: [ master, main, develop ]
+  workflow_dispatch:
+
+jobs:
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🧪 Run tests with coverage
+      run: npm test -- --coverage --coverageReporters=lcov
+      continue-on-error: true
+      
+    - name: 🔍 SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      continue-on-error: true
+
+  code-complexity:
+    name: 📊 Code Complexity Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install analysis tools
+      run: |
+        npm install -g complexity-report
+        npm install -g plato
+        
+    - name: 📊 Generate complexity report
+      run: |
+        echo "## 📊 Code Complexity Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Run complexity analysis
+        complexity-report src/**/*.ts --format json > complexity.json || true
+        
+        # Extract metrics
+        echo "### Metrics Summary" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        complexity-report src/**/*.ts --format plain 2>/dev/null | head -20 >> $GITHUB_STEP_SUMMARY || true
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+    - name: 📊 Generate Plato report
+      run: |
+        mkdir -p reports/plato
+        plato -r -d reports/plato src || true
+        
+    - name: 📤 Upload complexity reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: complexity-reports
+        path: reports/
+        retention-days: 30
+
+  code-duplication:
+    name: 🔍 Code Duplication Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        
+    - name: 📦 Install jscpd
+      run: npm install -g jscpd
+      
+    - name: 🔍 Check for code duplication
+      run: |
+        echo "## 🔍 Code Duplication Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        jscpd src \
+          --min-lines 5 \
+          --min-tokens 50 \
+          --format "json" \
+          --output reports || true
+          
+        # Check if report exists and has duplications
+        if [ -f "reports/jscpd-report.json" ]; then
+          DUPLICATES=$(cat reports/jscpd-report.json | jq '.statistics.total.percentage')
+          echo "Duplication: ${DUPLICATES}%" >> $GITHUB_STEP_SUMMARY
+          
+          if (( $(echo "$DUPLICATES > 5" | bc -l) )); then
+            echo "⚠️ Warning: Code duplication exceeds 5%" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Code duplication is within acceptable limits" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+  typescript-strict:
+    name: 🔍 TypeScript Strict Mode Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔍 Check with strict TypeScript
+      run: |
+        echo "## 🔍 TypeScript Strict Mode Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Try compiling with strict mode
+        npx tsc --noEmit --strict 2>&1 | tee typescript-strict.log || true
+        
+        # Count errors
+        ERROR_COUNT=$(grep -c "error TS" typescript-strict.log || echo "0")
+        
+        echo "Errors with strict mode: $ERROR_COUNT" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$ERROR_COUNT" -gt 50 ]; then
+          echo "⚠️ Many TypeScript strict mode violations found" >> $GITHUB_STEP_SUMMARY
+        elif [ "$ERROR_COUNT" -gt 0 ]; then
+          echo "📝 Some TypeScript strict mode violations found" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ Code passes TypeScript strict mode!" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  documentation-check:
+    name: 📚 Documentation Coverage
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: |
+        npm ci
+        npm install -g documentation
+        
+    - name: 📚 Check documentation coverage
+      run: |
+        echo "## 📚 Documentation Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Generate documentation
+        documentation build src/**/*.ts -f md > docs.md 2>/dev/null || true
+        
+        # Count documented vs undocumented functions
+        TOTAL_FUNCTIONS=$(grep -c "^export.*function\|^export.*class" src/**/*.ts || echo "0")
+        DOCUMENTED=$(grep -c "/\*\*" src/**/*.ts || echo "0")
+        
+        echo "Total exportable items: $TOTAL_FUNCTIONS" >> $GITHUB_STEP_SUMMARY
+        echo "Documented items: $DOCUMENTED" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$TOTAL_FUNCTIONS" -gt 0 ]; then
+          COVERAGE=$((DOCUMENTED * 100 / TOTAL_FUNCTIONS))
+          echo "Documentation coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$COVERAGE" -lt 50 ]; then
+            echo "⚠️ Low documentation coverage" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Good documentation coverage" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+  bundle-analysis:
+    name: 📦 Bundle Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔨 Build extension
+      run: npm run build
+      
+    - name: 📊 Analyze bundle
+      run: |
+        echo "## 📦 Bundle Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Install webpack-bundle-analyzer
+        npm install -g webpack-bundle-analyzer
+        
+        # Analyze each bundle
+        for file in dist/*.js; do
+          if [ -f "$file" ]; then
+            echo "### $(basename $file)" >> $GITHUB_STEP_SUMMARY
+            SIZE=$(wc -c < "$file")
+            GZIP_SIZE=$(gzip -c "$file" | wc -c)
+            echo "- Size: $((SIZE / 1024))KB" >> $GITHUB_STEP_SUMMARY
+            echo "- Gzipped: $((GZIP_SIZE / 1024))KB" >> $GITHUB_STEP_SUMMARY
+          fi
+        done
+        
+    - name: 🔍 Check for common issues
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Common Issues Check" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for console.log statements in production
+        if grep -r "console.log\|console.debug" dist/*.js 2>/dev/null; then
+          echo "⚠️ Found console statements in production build" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ No console statements in production build" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for source maps in production
+        if ls dist/*.map 2>/dev/null; then
+          echo "📝 Source maps are included (good for debugging)" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  performance-check:
+    name: ⚡ Performance Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: ⚡ Check for performance issues
+      run: |
+        echo "## ⚡ Performance Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for potentially expensive operations
+        echo "### Potential Performance Issues" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for synchronous file operations
+        if grep -r "readFileSync\|writeFileSync" src/ 2>/dev/null; then
+          echo "⚠️ Found synchronous file operations" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for inefficient array operations in loops
+        if grep -r "\.forEach.*await\|for.*of.*await" src/ 2>/dev/null; then
+          echo "⚠️ Found potentially inefficient async loops" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for regex in hot paths
+        if grep -r "new RegExp.*for\|new RegExp.*while" src/ 2>/dev/null; then
+          echo "⚠️ Found RegExp creation in loops" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "✅ Performance check completed" >> $GITHUB_STEP_SUMMARY

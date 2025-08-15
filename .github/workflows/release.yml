@@ -1,0 +1,303 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate-version:
+    name: 📋 Validate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🏷️ Get version
+      id: get-version
+      run: |
+        if [ "${{ github.event_name }}" == "push" ]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION=${{ github.event.inputs.version }}
+        fi
+        
+        echo "Version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+        # Validate version format
+        if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$'; then
+          echo "❌ Invalid version format: $VERSION"
+          exit 1
+        fi
+
+  build-extension:
+    name: 🔨 Build Extension
+    runs-on: ubuntu-latest
+    needs: validate-version
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔖 Update version in files
+      run: |
+        VERSION=${{ needs.validate-version.outputs.version }}
+        
+        # Update package.json
+        npm version $VERSION --no-git-tag-version
+        
+        # Update manifest.json
+        jq ".version = \"$VERSION\"" assets/manifest.json > tmp.json && mv tmp.json assets/manifest.json
+        
+    - name: 🧪 Run tests
+      run: npm test
+      
+    - name: 🔨 Build extension
+      run: npm run build
+      
+    - name: 📦 Package extension
+      run: |
+        # Create release directory
+        mkdir -p release
+        
+        # Copy necessary files
+        cp -r dist/* release/
+        cp -r assets/* release/
+        
+        # Create ZIP for Chrome Web Store
+        cd release
+        zip -r ../ugly-email-${{ needs.validate-version.outputs.version }}.zip .
+        cd ..
+        
+        # Create source ZIP
+        zip -r ugly-email-source-${{ needs.validate-version.outputs.version }}.zip . \
+          -x "*.git*" \
+          -x "*node_modules*" \
+          -x "*dist*" \
+          -x "*release*" \
+          -x "*.zip"
+          
+    - name: 📤 Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-artifacts
+        path: |
+          *.zip
+          release/
+        retention-days: 30
+
+  create-release:
+    name: 📦 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate-version, build-extension]
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: 📥 Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: release-artifacts
+        
+    - name: 📝 Generate changelog
+      id: changelog
+      run: |
+        VERSION=${{ needs.validate-version.outputs.version }}
+        
+        # Get previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        echo "## 📝 Changelog" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        
+        if [ -n "$PREV_TAG" ]; then
+          echo "### Changes since $PREV_TAG" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          # Generate commit list
+          git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" >> CHANGELOG.md
+        else
+          echo "Initial release" >> CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
+        echo "## 📊 Statistics" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "- Commits: $(git rev-list --count HEAD)" >> CHANGELOG.md
+        echo "- Contributors: $(git log --format='%aN' | sort -u | wc -l)" >> CHANGELOG.md
+        
+    - name: 🏷️ Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ needs.validate-version.outputs.version }}
+        name: Release v${{ needs.validate-version.outputs.version }}
+        body_path: CHANGELOG.md
+        draft: false
+        prerelease: ${{ contains(needs.validate-version.outputs.version, '-') }}
+        files: |
+          ugly-email-*.zip
+        generate_release_notes: true
+
+  publish-npm:
+    name: 📦 Publish to NPM
+    runs-on: ubuntu-latest
+    needs: [validate-version, build-extension]
+    continue-on-error: true
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        registry-url: 'https://registry.npmjs.org'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔖 Update version
+      run: npm version ${{ needs.validate-version.outputs.version }} --no-git-tag-version
+      
+    - name: 📤 Publish to NPM
+      run: npm publish --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      continue-on-error: true
+
+  chrome-store-upload:
+    name: 🌐 Upload to Chrome Web Store
+    runs-on: ubuntu-latest
+    needs: [validate-version, build-extension, create-release]
+    continue-on-error: true
+    
+    steps:
+    - name: 📥 Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: release-artifacts
+        
+    - name: 🌐 Upload to Chrome Web Store
+      uses: mnao305/chrome-extension-upload@v4.0.1
+      continue-on-error: true
+      with:
+        file-path: ugly-email-${{ needs.validate-version.outputs.version }}.zip
+        extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+        client-id: ${{ secrets.CHROME_CLIENT_ID }}
+        client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+        refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        publish: false  # Set to true to auto-publish
+
+  create-pr-for-version-bump:
+    name: 📝 Create Version Bump PR
+    runs-on: ubuntu-latest
+    needs: [validate-version, create-release]
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        
+    - name: 📝 Update version files
+      run: |
+        VERSION=${{ needs.validate-version.outputs.version }}
+        
+        # Create new branch
+        git checkout -b version-bump-$VERSION
+        
+        # Update versions
+        npm version $VERSION --no-git-tag-version
+        jq ".version = \"$VERSION\"" assets/manifest.json > tmp.json && mv tmp.json assets/manifest.json
+        
+        # Commit changes
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "github-actions[bot]"
+        git add -A
+        git commit -m "chore: bump version to $VERSION"
+        git push origin version-bump-$VERSION
+        
+    - name: 📝 Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        branch: version-bump-${{ needs.validate-version.outputs.version }}
+        title: "chore: bump version to ${{ needs.validate-version.outputs.version }}"
+        body: |
+          ## Version Bump
+          
+          This PR updates the version to ${{ needs.validate-version.outputs.version }}
+          
+          ### Changed Files
+          - `package.json`
+          - `package-lock.json`
+          - `assets/manifest.json`
+          
+          ### Checklist
+          - [ ] Version numbers are consistent across all files
+          - [ ] Tests pass
+          - [ ] Build succeeds
+          
+          ---
+          *This PR was automatically created by the release workflow.*
+        labels: |
+          version-bump
+          automated
+        assignees: arfrank
+
+  notify-release:
+    name: 📢 Notify Release
+    runs-on: ubuntu-latest
+    needs: [validate-version, create-release]
+    if: always()
+    
+    steps:
+    - name: 📢 Send notification
+      run: |
+        VERSION=${{ needs.validate-version.outputs.version }}
+        STATUS="${{ needs.create-release.result }}"
+        
+        if [ "$STATUS" == "success" ]; then
+          echo "✅ Successfully released version $VERSION"
+        else
+          echo "❌ Failed to release version $VERSION"
+        fi
+        
+        # Add webhook notification here if needed
+        # curl -X POST ${{ secrets.WEBHOOK_URL }} \
+        #   -H "Content-Type: application/json" \
+        #   -d "{\"version\": \"$VERSION\", \"status\": \"$STATUS\"}"
