@@ -1,17 +1,18 @@
 /* eslint-disable @typescript-eslint/dot-notation */
-import messengerInstance, { UglyMessenger } from '../../src/services/messenger';
+import messengerInstance, { Messenger } from '../../src/services/messenger';
 
 describe('Worker service', () => {
   it('exports instance by default', () => {
-    expect(messengerInstance).toBeInstanceOf(UglyMessenger);
+    expect(messengerInstance).toBeInstanceOf(Messenger);
   });
 
-  it('sends a message', () => {
+  it('sends a message', async () => {
     const postMessage = jest.spyOn(window, 'postMessage');
+    jest.spyOn(messengerInstance as any, 'generateUniqueId').mockReturnValue('12345');
 
     expect(messengerInstance['resolvers']).toMatchObject({});
 
-    messengerInstance.postMessage('12345', '<div></div>');
+    const promise = messengerInstance.send('<div></div>');
 
     expect(messengerInstance['resolvers']['12345']).toBeDefined();
 
@@ -20,5 +21,9 @@ describe('Worker service', () => {
       body: '<div></div>',
       from: 'ugly-email-check',
     }, 'http://localhost');
+
+    // Clean up the promise
+    messengerInstance['resolvers']['12345'].resolve(null);
+    await promise;
   });
 });

@@ -1,0 +1,265 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'package*.json'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  dependency-audit:
+    name: 🔒 Dependency Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔍 Run npm audit
+      id: npm-audit
+      run: |
+        npm audit --json > audit.json || true
+        VULNS=$(cat audit.json | jq '.metadata.vulnerabilities.total')
+        CRITICAL=$(cat audit.json | jq '.metadata.vulnerabilities.critical')
+        HIGH=$(cat audit.json | jq '.metadata.vulnerabilities.high')
+        
+        echo "Total vulnerabilities: $VULNS"
+        echo "Critical: $CRITICAL, High: $HIGH"
+        
+        echo "vulns=$VULNS" >> $GITHUB_OUTPUT
+        echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+        echo "high=$HIGH" >> $GITHUB_OUTPUT
+        
+        if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+          echo "❌ Found critical or high vulnerabilities!"
+          npm audit
+          exit 1
+        fi
+        
+    - name: 📊 Create audit report
+      if: always()
+      run: |
+        echo "## 🔒 Security Audit Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- Total vulnerabilities: ${{ steps.npm-audit.outputs.vulns }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Critical: ${{ steps.npm-audit.outputs.critical }}" >> $GITHUB_STEP_SUMMARY
+        echo "- High: ${{ steps.npm-audit.outputs.high }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Details" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        npm audit 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || true
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+  snyk-scan:
+    name: 🛡️ Snyk Security Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🛡️ Run Snyk to check for vulnerabilities
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+
+  codeql-analysis:
+    name: 🔍 CodeQL Analysis
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'javascript', 'typescript' ]
+        
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Initialize CodeQL
+      uses: github/codeql-action/init@v2
+      with:
+        languages: ${{ matrix.language }}
+        queries: security-and-quality
+        
+    - name: 🔨 Autobuild
+      uses: github/codeql-action/autobuild@v2
+      
+    - name: 🔍 Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        category: "/language:${{matrix.language}}"
+
+  osv-scan:
+    name: 🔍 OSV Vulnerability Scanner
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔍 Run OSV Scanner
+      uses: google/osv-scanner-action@v1
+      with:
+        scan-args: |-
+          --lockfile=package-lock.json
+          --format=markdown
+          
+    - name: 📊 Upload OSV results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: osv-results
+        path: osv-results.md
+        retention-days: 90
+
+  license-check:
+    name: 📜 License Compliance Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 📜 Check licenses
+      run: |
+        npx license-checker --production --summary --excludePrivatePackages > licenses.txt
+        
+        # Check for problematic licenses
+        PROBLEMATIC_LICENSES="GPL|AGPL|LGPL|SSPL|Commons-Clause"
+        
+        if grep -E "$PROBLEMATIC_LICENSES" licenses.txt; then
+          echo "⚠️ Warning: Found potentially problematic licenses"
+          cat licenses.txt
+        else
+          echo "✅ All licenses appear to be compatible"
+        fi
+        
+    - name: 📤 Upload license report
+      uses: actions/upload-artifact@v3
+      with:
+        name: license-report
+        path: licenses.txt
+        retention-days: 30
+
+  secrets-scan:
+    name: 🔑 Secret Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: 🔍 TruffleHog OSS
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: ${{ github.event.repository.default_branch }}
+        head: HEAD
+        extra_args: --debug --only-verified
+
+  permissions-check:
+    name: 🔐 Extension Permissions Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔍 Analyze manifest permissions
+      run: |
+        echo "## 🔐 Extension Permissions Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Extract permissions from manifest
+        PERMISSIONS=$(python3 -c "
+        import json
+        manifest = json.load(open('assets/manifest.json'))
+        perms = manifest.get('permissions', [])
+        host_perms = manifest.get('host_permissions', [])
+        print('### Regular Permissions')
+        for p in perms:
+            print(f'- {p}')
+        print('### Host Permissions')
+        for p in host_perms:
+            print(f'- {p}')
+        ")
+        
+        echo "$PERMISSIONS" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for dangerous permissions
+        DANGEROUS_PERMS="<all_urls>|http://*/*|*://*/*|file:///*"
+        
+        if echo "$PERMISSIONS" | grep -E "$DANGEROUS_PERMS"; then
+          echo "⚠️ Warning: Extension requests broad permissions" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "✅ Permissions appear to be appropriately scoped" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  create-security-report:
+    name: 📊 Create Security Report
+    runs-on: ubuntu-latest
+    needs: [dependency-audit, codeql-analysis, osv-scan, license-check, secrets-scan, permissions-check]
+    if: always()
+    
+    steps:
+    - name: 📊 Generate Security Summary
+      run: |
+        echo "# 🔒 Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Dependency Audit | ${{ needs.dependency-audit.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| CodeQL Analysis | ${{ needs.codeql-analysis.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| OSV Scan | ${{ needs.osv-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| License Check | ${{ needs.license-check.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Secrets Scan | ${{ needs.secrets-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Permissions Check | ${{ needs.permissions-check.result }} |" >> $GITHUB_STEP_SUMMARY
+        
+        # Fail if any critical checks failed
+        if [ "${{ needs.dependency-audit.result }}" == "failure" ] || \
+           [ "${{ needs.secrets-scan.result }}" == "failure" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "❌ Critical security issues detected!" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Security scan completed" >> $GITHUB_STEP_SUMMARY

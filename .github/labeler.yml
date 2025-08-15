@@ -1,0 +1,60 @@
+# Add labels based on file changes
+documentation:
+  - '*.md'
+  - 'docs/**'
+  - 'LICENSE'
+
+dependencies:
+  - 'package.json'
+  - 'package-lock.json'
+  - 'yarn.lock'
+
+javascript:
+  - '**/*.js'
+  - '**/*.jsx'
+
+typescript:
+  - '**/*.ts'
+  - '**/*.tsx'
+  - 'tsconfig.json'
+
+tests:
+  - 'tests/**'
+  - '**/*.test.ts'
+  - '**/*.spec.ts'
+  - 'jest.config.js'
+
+build:
+  - '.github/workflows/**'
+  - 'webpack.config.js'
+  - 'rollup.config.js'
+  - 'vite.config.js'
+  - '.babelrc'
+
+manifest:
+  - 'assets/manifest.json'
+  - 'manifest.json'
+
+styles:
+  - '**/*.css'
+  - '**/*.scss'
+  - '**/*.sass'
+  - '**/*.less'
+
+security:
+  - 'src/services/trackers.ts'
+  - 'src/utils/safe-regex.ts'
+  - '.github/workflows/security.yml'
+
+background:
+  - 'src/background.ts'
+
+content-script:
+  - 'src/loader.ts'
+  - 'src/uglyemail.ts'
+
+services:
+  - 'src/services/**'
+
+utils:
+  - 'src/utils/**'

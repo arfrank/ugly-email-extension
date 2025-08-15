@@ -1,0 +1,305 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+  CACHE_NAME: 'node-modules-cache'
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x, 20.x]
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        
+    - name: 📦 Cache dependencies
+      uses: actions/cache@v3
+      id: cache
+      with:
+        path: node_modules
+        key: ${{ runner.os }}-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ env.CACHE_NAME }}-
+          
+    - name: 📦 Install dependencies
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: npm ci
+      
+    - name: 🧪 Run unit tests
+      run: npm test
+      
+    - name: 📊 Upload coverage reports
+      uses: codecov/codecov-action@v3
+      if: matrix.node-version == '18.x'
+      with:
+        files: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  lint:
+    name: Lint & Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: 📦 Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: node_modules
+        key: ${{ runner.os }}-${{ env.CACHE_NAME }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ env.CACHE_NAME }}-
+          
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🎨 Run ESLint
+      run: npm run lint
+      continue-on-error: true
+      
+    - name: 📝 Annotate ESLint results
+      uses: ataylorme/eslint-annotate-action@v2
+      if: always()
+      with:
+        repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        report-json: "eslint-report.json"
+
+  type-check:
+    name: TypeScript Type Checking
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔍 Run TypeScript compiler
+      run: npx tsc --noEmit
+
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔨 Build extension
+      run: npm run build
+      
+    - name: 📁 Verify build output
+      run: |
+        if [ ! -f "dist/background.js" ]; then
+          echo "❌ Build failed: background.js not found"
+          exit 1
+        fi
+        if [ ! -f "dist/uglyemail.js" ]; then
+          echo "❌ Build failed: uglyemail.js not found"
+          exit 1
+        fi
+        if [ ! -f "dist/loader.js" ]; then
+          echo "❌ Build failed: loader.js not found"
+          exit 1
+        fi
+        echo "✅ Build successful!"
+        
+    - name: 📦 Create extension package
+      run: |
+        mkdir -p extension-package
+        cp -r dist/* extension-package/
+        cp -r assets/* extension-package/
+        cd extension-package
+        zip -r ../ugly-email-extension.zip .
+        
+    - name: 📤 Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: extension-build-${{ github.sha }}
+        path: |
+          dist/
+          ugly-email-extension.zip
+        retention-days: 30
+
+  manifest-validation:
+    name: Validate Manifest
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔍 Validate manifest.json
+      run: |
+        echo "🔍 Checking manifest.json..."
+        if [ ! -f "assets/manifest.json" ]; then
+          echo "❌ manifest.json not found!"
+          exit 1
+        fi
+        
+        # Check if it's valid JSON
+        python3 -m json.tool assets/manifest.json > /dev/null
+        if [ $? -ne 0 ]; then
+          echo "❌ Invalid JSON in manifest.json"
+          exit 1
+        fi
+        
+        # Check manifest version
+        MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('assets/manifest.json'))['manifest_version'])")
+        if [ "$MANIFEST_VERSION" != "3" ]; then
+          echo "⚠️ Warning: Manifest version is $MANIFEST_VERSION, expected 3"
+        fi
+        
+        echo "✅ Manifest validation passed!"
+
+  size-check:
+    name: Bundle Size Check
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🔨 Build extension
+      run: npm run build
+      
+    - name: 📏 Check bundle sizes
+      run: |
+        echo "📊 Bundle Size Report:"
+        echo "========================"
+        
+        MAX_SIZE_KB=500
+        TOTAL_SIZE=0
+        
+        for file in dist/*.js; do
+          if [ -f "$file" ]; then
+            SIZE=$(du -k "$file" | cut -f1)
+            TOTAL_SIZE=$((TOTAL_SIZE + SIZE))
+            echo "📦 $(basename $file): ${SIZE}KB"
+            
+            if [ $SIZE -gt $MAX_SIZE_KB ]; then
+              echo "⚠️ Warning: $(basename $file) exceeds ${MAX_SIZE_KB}KB limit!"
+            fi
+          fi
+        done
+        
+        echo "========================"
+        echo "📊 Total JS Size: ${TOTAL_SIZE}KB"
+        
+        if [ $TOTAL_SIZE -gt 1000 ]; then
+          echo "⚠️ Warning: Total bundle size exceeds 1MB!"
+        fi
+
+  compatibility-check:
+    name: Browser Compatibility
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: 📦 Install dependencies
+      run: npm ci
+      
+    - name: 🌐 Check browser compatibility
+      run: |
+        echo "🌐 Checking Chrome API usage..."
+        
+        # Check for deprecated APIs
+        if grep -r "chrome.extension.getURL" src/; then
+          echo "⚠️ Warning: Found usage of deprecated chrome.extension.getURL"
+        fi
+        
+        if grep -r "chrome.runtime.onSuspend" src/; then
+          echo "⚠️ Warning: Found usage of chrome.runtime.onSuspend (not available in MV3)"
+        fi
+        
+        echo "✅ Compatibility check complete!"
+
+  all-checks-passed:
+    name: ✅ All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [test, lint, type-check, build, manifest-validation, size-check, compatibility-check]
+    if: always()
+    
+    steps:
+    - name: 🎉 All checks summary
+      run: |
+        echo "🎉 All CI checks completed!"
+        echo "Test: ${{ needs.test.result }}"
+        echo "Lint: ${{ needs.lint.result }}"
+        echo "Type Check: ${{ needs.type-check.result }}"
+        echo "Build: ${{ needs.build.result }}"
+        echo "Manifest: ${{ needs.manifest-validation.result }}"
+        echo "Size Check: ${{ needs.size-check.result }}"
+        echo "Compatibility: ${{ needs.compatibility-check.result }}"
+        
+        if [ "${{ needs.test.result }}" != "success" ] || \
+           [ "${{ needs.lint.result }}" != "success" ] || \
+           [ "${{ needs.type-check.result }}" != "success" ] || \
+           [ "${{ needs.build.result }}" != "success" ] || \
+           [ "${{ needs.manifest-validation.result }}" != "success" ]; then
+          echo "❌ Some checks failed!"
+          exit 1
+        fi
+        
+        echo "✅ All checks passed successfully!"

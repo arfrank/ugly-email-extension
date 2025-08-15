@@ -1,5 +1,5 @@
 const u = document.createElement('script');
-u.src = chrome.extension.getURL('uglyemail.js');
+u.src = chrome.runtime.getURL('uglyemail.js');
 
 (document.head || document.documentElement).appendChild(u);
 

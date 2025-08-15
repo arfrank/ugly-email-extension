@@ -1,66 +1,77 @@
+import $ from 'jquery';
 import * as dom from '../../src/utils/dom';
-import * as gmail from '../../src/utils/gmail';
 
 jest.mock('../../vendor/gmail-js', () => ({}));
 
 describe('dom util', () => {
-  it('marks list elements ugly', async () => {
-    jest
-      .spyOn(gmail, 'findTracker')
-      .mockResolvedValueOnce('SendGrid')
-      .mockResolvedValueOnce(null);
-
-    document.body.innerHTML = `
-    <div>
-      <h1 class="bog">
-        <span data-legacy-thread-id="1" data-ugly-checked="yes"></span>
-      </h1>
-      <h1 class="bog">
-        <span data-legacy-thread-id="2" data-ugly-checked="yes"></span>
-      </h1>
-      <h1 class="bog">
-        <div class="xT">
-          <span data-legacy-thread-id="3"></span>
-        </div>
-      </h1>
-      <h1 class="bog">
-        <span data-legacy-thread-id="4"></span>
-      </h1>
-      <h1 class="bog">
-        <span data-legacy-thread-id="5" data-ugly-checked="yes"></span>
-      </h1>
-    </div>
-    `;
-
-    await dom.checkList();
-
-    const icon = document.body.querySelector<HTMLImageElement>('.ugly-email-track-icon');
-
-    if (icon) {
-      expect(icon).toBeDefined();
-      expect(icon.dataset.tooltip).toEqual('SendGrid');
-    }
+  beforeEach(() => {
+    document.body.innerHTML = '';
   });
 
-  it('marks thread ugly', async () => {
-    jest.spyOn(gmail, 'findTracker').mockResolvedValueOnce('MailChimp');
-
+  it('checks if element is eligible', () => {
     document.body.innerHTML = `
-    <div>
-      <div class="nH V8djrc byY">
-        <div class="ade"></div>
-        <h2 class="hP" data-legacy-thread-id="5"></h2>
+      <div class="test-element">
+        <span class="ugly-email-track-icon">Already marked</span>
       </div>
-    </div>
     `;
 
-    await dom.checkThread();
+    const $element = $('.test-element');
+    expect(dom.isEligible($element)).toBe(false);
+  });
 
-    const icon = document.body.querySelector<HTMLImageElement>('.ugly-email-track-icon');
+  it('checks if element without icon is eligible', () => {
+    document.body.innerHTML = `
+      <div class="test-element">
+        <span>Not marked</span>
+      </div>
+    `;
 
-    if (icon) {
-      expect(icon).toBeDefined();
-      expect(icon.dataset.tooltip).toEqual('MailChimp');
-    }
+    const $element = $('.test-element');
+    expect(dom.isEligible($element)).toBe(true);
+  });
+
+  it('applies tracking icon to element', () => {
+    document.body.innerHTML = `
+      <div class="test-element">
+        <h2 class="hP">Subject</h2>
+      </div>
+    `;
+
+    const $element = $('.test-element');
+    dom.applyIcons($element, 'SendGrid');
+
+    const icon = document.querySelector('.ugly-email-track-icon');
+    expect(icon).toBeTruthy();
+    expect(icon?.getAttribute('data-tooltip')).toBe('SendGrid');
+  });
+
+  it('removes tracking icons', () => {
+    document.body.innerHTML = `
+      <div class="test-element" data-ugly-checked="yes">
+        <span class="ugly-email-track-icon">Icon</span>
+      </div>
+    `;
+
+    const $element = $('.test-element');
+    dom.removeIcons($element);
+
+    const icon = document.querySelector('.ugly-email-track-icon');
+    expect(icon).toBeFalsy();
+    expect($element.attr('data-ugly-checked')).toBeUndefined();
+  });
+
+  it('does not apply icon if element is not eligible', () => {
+    document.body.innerHTML = `
+      <div class="test-element">
+        <span class="ugly-email-track-icon">Already has icon</span>
+        <h2 class="hP">Subject</h2>
+      </div>
+    `;
+
+    const $element = $('.test-element');
+    dom.applyIcons($element, 'Mailchimp');
+
+    const icons = document.querySelectorAll('.ugly-email-track-icon');
+    expect(icons.length).toBe(1); // Should still only have one icon
   });
 });
